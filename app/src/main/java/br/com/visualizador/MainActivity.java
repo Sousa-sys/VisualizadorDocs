@@ -23,6 +23,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.*;
 import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.*;
 
 public class MainActivity extends Activity {
@@ -59,8 +61,11 @@ public class MainActivity extends Activity {
         save.setText("Salvar como");
         save.setEnabled(false);
         save.setOnClickListener(v -> saveCopy());
+        Button history = new Button(this);
+        history.setText("Histórico");
+        history.setOnClickListener(v -> confirmDiscard(this::showHistory));
         LinearLayout bar = new LinearLayout(this);
-        for (Button b : new Button[] {open, edit, save}) bar.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+        for (Button b : new Button[] {open, history, edit, save}) bar.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
         content = new FrameLayout(this);
         root.addView(bar);
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -77,6 +82,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         if (result != RESULT_OK || data == null || data.getData() == null) return;
+        if (request == PICK || request == SAVE) keepAccess(data);
         if (request == PICK) load(data.getData());
         else if (request == SAVE && pending != null) write(data.getData(), pending);
         else if (request == SAVE) toast("Não foi salvo: o app foi reiniciado. Edite novamente.");
@@ -230,6 +236,68 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    /** Mantém a permissão de leitura para reabrir o arquivo pelo histórico. */
+    private void keepAccess(Intent data) {
+        try {
+            getContentResolver().takePersistableUriPermission(data.getData(), Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException e) {
+            // O provedor não oferece permissão permanente.
+        }
+    }
+
+    /** Cada item é "uri\tnome"; o mais recente vem primeiro. */
+    private List<String> recent() {
+        String saved = getPreferences(MODE_PRIVATE).getString("recent", "");
+        List<String> items = new ArrayList<>();
+        for (String line : saved.split("\n")) if (line.contains("\t")) items.add(line);
+        return items;
+    }
+
+    private void remember(Uri uri, String file) {
+        List<String> items = recent();
+        items.removeIf(line -> line.startsWith(uri + "\t"));
+        items.add(0, uri + "\t" + file.replace('\n', ' ').replace('\t', ' '));
+        if (items.size() > 30) items.subList(30, items.size()).clear();
+        getPreferences(MODE_PRIVATE).edit().putString("recent", String.join("\n", items)).apply();
+    }
+
+    private void showHistory() {
+        generation++;
+        editor = null;
+        current = null;
+        edit.setEnabled(false);
+        save.setEnabled(false);
+        setTitle("Histórico");
+        List<String> items = recent();
+        if (items.isEmpty()) { message("Nenhum documento aberto ainda."); return; }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Button clear = new Button(this);
+        clear.setText("Limpar histórico");
+        clear.setOnClickListener(v -> {
+            getPreferences(MODE_PRIVATE).edit().remove("recent").apply();
+            showHistory();
+        });
+        ListView list = new ListView(this);
+        list.setAdapter(new BaseAdapter() {
+            public int getCount() { return items.size(); }
+            public Object getItem(int i) { return items.get(i); }
+            public long getItemId(int i) { return i; }
+            public View getView(int i, View recycled, ViewGroup parent) {
+                TextView t = recycled != null ? (TextView) recycled : new TextView(MainActivity.this);
+                t.setPadding(32, 32, 32, 32);
+                t.setTextSize(16);
+                t.setText(items.get(i).substring(items.get(i).indexOf('\t') + 1));
+                return t;
+            }
+        });
+        list.setOnItemClickListener((parent, view, i, id) ->
+            load(Uri.parse(items.get(i).substring(0, items.get(i).indexOf('\t')))));
+        box.addView(clear);
+        box.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        replace(box);
+    }
+
     private void load(Uri uri) {
         current = uri;
         int mine = ++generation;
@@ -251,10 +319,17 @@ public class MainActivity extends Activity {
                 if (Converter.extension(name).equals("pdf") || "application/pdf".equals(type)) {
                     openPdf(uri);
                     int pages = pdf.getPageCount();
-                    runOnUiThread(() -> { if (mine == generation) showPdf(pages, mine); });
+                    runOnUiThread(() -> { if (mine != generation) return;
+                        remember(uri, name);
+                        showPdf(pages, mine);
+                    });
                 } else {
                     String html = Converter.toHtml(name, read(uri));
-                    runOnUiThread(() -> { if (mine == generation) showHtml(html); });
+                    runOnUiThread(() -> {
+                        if (mine != generation) return;
+                        remember(uri, name);
+                        showHtml(html);
+                    });
                 }
             } catch (Throwable e) {
                 String why = e instanceof SecurityException ? "Sem acesso ao arquivo (ou PDF com senha)."
