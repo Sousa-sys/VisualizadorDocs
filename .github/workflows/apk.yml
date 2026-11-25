@@ -1,5 +1,7 @@
 name: Gerar APK
 on: [push, workflow_dispatch]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,3 +16,13 @@ jobs:
         with:
           name: visualizador-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar versão
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="v$(sed -n "s/.*versionName '\(.*\)'.*/\1/p" app/build.gradle)"
+          gh release view "$v" >/dev/null 2>&1 && exit 0
+          cp app/build/outputs/apk/debug/app-debug.apk "VisualizadorDocs-$v.apk"
+          gh release create "$v" "VisualizadorDocs-$v.apk" --target "$GITHUB_SHA" --title "Versão ${v#v}" \
+            --notes "Novidade: histórico de documentos abertos. Versão de teste: desinstale a anterior antes de instalar."
