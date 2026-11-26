@@ -14,6 +14,8 @@ import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebResourceRequest;
@@ -368,6 +370,7 @@ public class MainActivity extends Activity {
     }
 
     private void replace(View v) {
+        pinch = null;
         destroyWeb();
         content.removeAllViews();
         content.addView(v, new FrameLayout.LayoutParams(-1, -1));
@@ -409,7 +412,16 @@ public class MainActivity extends Activity {
         v.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
+    private float zoom = 1;
+    private ScaleGestureDetector pinch;   // não nulo enquanto um PDF está na tela
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (pinch != null) pinch.onTouchEvent(event);
+        return super.dispatchTouchEvent(event);
+    }
+
     private void showPdf(int pages, int mine) {
+        zoom = 1;
         ListView list = new ListView(this);
         list.setBackgroundColor(Color.DKGRAY);
         list.setDividerHeight(12);
@@ -423,7 +435,7 @@ public class MainActivity extends Activity {
                 image.setMinimumHeight(600);
                 image.setImageDrawable(null);
                 image.setTag(position);
-                int width = Math.max(1, Math.min(parent.getWidth(), 1440));
+                int width = Math.max(1, Math.min(parent.getWidth(), 2000));
                 worker.execute(() -> {
                     if (mine != generation || pdf == null || !Integer.valueOf(position).equals(image.getTag())) return;
                     try (PdfRenderer.Page p = pdf.openPage(position)) {
@@ -442,6 +454,41 @@ public class MainActivity extends Activity {
                 return image;
             }
         });
-        replace(list);
+        // A largura da lista cresce com o zoom; a rolagem lateral mostra o restante.
+        FrameLayout page = new FrameLayout(this) {
+            @Override protected void onMeasure(int width, int height) {
+                int wide = Math.round(getResources().getDisplayMetrics().widthPixels * zoom);
+                super.onMeasure(MeasureSpec.makeMeasureSpec(wide, MeasureSpec.EXACTLY), height);
+            }
+        };
+        page.addView(list, new FrameLayout.LayoutParams(-1, -1));
+        HorizontalScrollView side = new HorizontalScrollView(this);
+        side.addView(page, new FrameLayout.LayoutParams(-2, -1));
+
+        java.util.function.Consumer<Float> setZoom = value -> {
+            zoom = Math.max(1f, Math.min(value, 4f));
+            page.requestLayout();
+            // Redesenha as páginas depois do novo tamanho, para ficarem nítidas.
+            page.post(((BaseAdapter) list.getAdapter())::notifyDataSetChanged);
+        };
+        LinearLayout buttons = new LinearLayout(this);
+        String[] labels = {"Zoom −", "Zoom +"};
+        for (int i = 0; i < 2; i++) {
+            float factor = i == 0 ? 0.8f : 1.25f;
+            Button b = new Button(this);
+            b.setText(labels[i]);
+            b.setOnClickListener(v -> setZoom.accept(zoom * factor));
+            buttons.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(side, new LinearLayout.LayoutParams(-1, 0, 1));
+        box.addView(buttons);
+        replace(box);
+        pinch = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            private float scale = 1;
+            @Override public boolean onScale(ScaleGestureDetector d) { scale *= d.getScaleFactor(); return true; }
+            @Override public void onScaleEnd(ScaleGestureDetector d) { setZoom.accept(zoom * scale); scale = 1; }
+        });
     }
 }
