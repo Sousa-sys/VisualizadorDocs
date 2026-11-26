@@ -206,7 +206,7 @@ public class MainActivity extends Activity {
         String type = getContentResolver().getType(current);
         i.setType(type == null ? "application/octet-stream" : type);
         int dot = name.lastIndexOf('.');
-        i.putExtra(Intent.EXTRA_TITLE, name.substring(0, dot) + " (editado)" + name.substring(dot));
+        i.putExtra(Intent.EXTRA_TITLE, dot < 0 ? name + " (editado)" : name.substring(0, dot) + " (editado)" + name.substring(dot));
         startActivityForResult(i, SAVE);
     }
 
@@ -315,7 +315,9 @@ public class MainActivity extends Activity {
                     if (mine != generation) return;
                     this.name = name;
                     setTitle(name);
-                    edit.setEnabled(Editor.supports(name));
+                    String mime = getContentResolver().getType(uri);
+                    edit.setEnabled(Editor.supports(name)
+                        && (mime == null || !(mime.equals("application/pdf") || mime.startsWith("image/") && !mime.contains("svg"))));
                 });
                 String type = getContentResolver().getType(uri);
                 if (Converter.extension(name).equals("pdf") || "application/pdf".equals(type)) {

@@ -40,33 +40,43 @@ public final class Editor {
     private Charset charset;
     private byte[] bom = {};
     private boolean crlf;
+    private boolean rtf;
+    private final Map<String, String> sources = new HashMap<>();             // capítulos do EPUB
+    private final Map<String, TreeMap<Integer, Object[]>> edits = new HashMap<>(); // posição -> {fim, texto}
     private final Set<Field> touched = new HashSet<>();
 
+    private static final List<String> WORD = Arrays.asList("docx", "docm", "dotx", "dotm");
+    private static final List<String> SHEET = Arrays.asList("xlsx", "xlsm", "xltx", "xltm");
+    private static final List<String> SLIDES = Arrays.asList("pptx", "pptm", "ppsx", "ppsm", "potx", "potm");
+    private static final List<String> ODF = Arrays.asList("odt", "ods", "odp", "ott", "ots", "otp");
+
+    /** Tudo o que não está nesta lista é tentado como documento ou texto. */
     public static boolean supports(String name) {
-        return isText(name) || Arrays.asList("docx", "docm", "xlsx", "xlsm", "pptx", "odt", "ods", "odp")
-            .contains(extension(name));
+        return !Arrays.asList("pdf", "doc", "xls", "ppt", "png", "jpg", "jpeg", "gif", "webp", "bmp",
+            "zip", "jar", "apk").contains(extension(name));
     }
 
-    private static boolean isText(String name) {
-        return Arrays.asList("txt", "md", "markdown", "csv", "tsv", "json", "xml", "html", "htm", "xhtml", "svg",
-            "log", "ini", "yml", "yaml", "properties", "java", "kt", "py", "js", "ts", "c", "h", "cpp", "css",
-            "sql", "sh", "gradle", "toml", "conf").contains(extension(name));
+    private static boolean isText(String ext) {
+        return !(WORD.contains(ext) || SHEET.contains(ext) || SLIDES.contains(ext) || ODF.contains(ext)
+            || ext.equals("epub"));
     }
 
     public Editor(String name, byte[] data) throws Exception {
         if (!supports(name)) throw new IOException("Este formato só pode ser visualizado.");
-        plainText = isText(name);
+        String ext = extension(name);
+        plainText = isText(ext);
+        rtf = ext.equals("rtf");
         if (plainText) { openText(data); return; }
         zip = unzip(data);
-        String ext = extension(name);
-        if (ext.startsWith("doc")) paragraphs("word/document.xml", "w:p", "w:t", "Parágrafo ");
-        else if (ext.equals("pptx")) {
+        if (ext.equals("epub")) epub();
+        else if (WORD.contains(ext)) paragraphs("word/document.xml", "w:p", "w:t", "Parágrafo ");
+        else if (SLIDES.contains(ext)) {
             Map<String, String> rels = Office.rels(zip, "ppt/_rels/presentation.xml.rels");
             int slide = 0;
             for (Element id : all(xml(zip.get("ppt/presentation.xml")), "p:sldId"))
                 paragraphs(Office.resolve("ppt/", rels.get(id.getAttribute("r:id"))), "a:p", "a:t",
                     "Slide " + (++slide) + ", trecho ");
-        } else if (ext.startsWith("xls")) sheets();
+        } else if (SHEET.contains(ext)) sheets();
         else {
             int[] n = {0};
             for (Element body : all(part("content.xml"), "office:body")) odf(body, n);
@@ -105,6 +115,32 @@ public final class Editor {
         if (s.length() > MAX_TEXT) throw new IOException("Arquivo grande demais para editar.");
         crlf = s.contains("\r\n");
         add("Texto", s.replace("\r\n", "\n"), null, v -> {});
+    }
+
+    // ---------- EPUB: altera só os trechos de texto, sem reescrever o restante do capítulo ----------
+    private void epub() {
+        java.util.regex.Pattern token = java.util.regex.Pattern.compile(
+            "(?is)<!--.*?-->|<(script|style)\\b.*?</\\1>|<[^>]*>|([^<]+)");
+        int chapter = 0;
+        for (Map.Entry<String, byte[]> entry : zip.entrySet()) {
+            String path = entry.getKey();
+            if (!path.toLowerCase(Locale.ROOT).matches(".*\\.(xhtml|html|htm)")) continue;
+            String source = new String(entry.getValue(), StandardCharsets.UTF_8);
+            int body = source.indexOf("<body");
+            if (body < 0) continue;
+            sources.put(path, source);
+            chapter++;
+            java.util.regex.Matcher m = token.matcher(source);
+            m.region(body, source.length());
+            int n = 0;
+            while (m.find()) {
+                if (m.group(2) == null || m.group(2).trim().isEmpty()) continue;
+                int start = m.start(2), end = m.end(2);
+                add("Arquivo " + chapter + ", trecho " + (++n), m.group(2), path, v ->
+                    edits.computeIfAbsent(path, k -> new TreeMap<>()).put(start, new Object[] {end,
+                        v.replaceAll("&(?!#?\\w+;)", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}));
+            }
+        }
     }
 
     // ---------- Word e PowerPoint ----------
@@ -310,6 +346,13 @@ public final class Editor {
         if (plainText) {
             String s = fields.get(0).value;
             if (crlf) s = s.replace("\n", "\r\n");
+            if (rtf) { // RTF representa acentos com códigos \\uN
+                StringBuilder ascii = new StringBuilder();
+                for (char c : s.toCharArray())
+                    if (c < 128) ascii.append(c);
+                    else ascii.append("\\u").append((int) (short) c).append('?');
+                s = ascii.toString();
+            }
             if (!charset.newEncoder().canEncode(s)) charset = StandardCharsets.UTF_8;
             out.write(bom);
             out.write(s.getBytes(charset));
@@ -328,7 +371,13 @@ public final class Editor {
         try (ZipOutputStream z = new ZipOutputStream(out)) {
             for (Map.Entry<String, byte[]> entry : zip.entrySet()) {
                 byte[] bytes = entry.getValue();
-                if (dirty.contains(entry.getKey())) {
+                if (dirty.contains(entry.getKey()) && sources.containsKey(entry.getKey())) {
+                    StringBuilder text = new StringBuilder(sources.get(entry.getKey()));
+                    // Do fim para o começo, para as posições continuarem válidas.
+                    for (Map.Entry<Integer, Object[]> e : edits.get(entry.getKey()).descendingMap().entrySet())
+                        text.replace(e.getKey(), (Integer) e.getValue()[0], (String) e.getValue()[1]);
+                    bytes = text.toString().getBytes(StandardCharsets.UTF_8);
+                } else if (dirty.contains(entry.getKey())) {
                     ByteArrayOutputStream x = new ByteArrayOutputStream();
                     t.transform(new DOMSource(parts.get(entry.getKey()).getOwnerDocument()), new StreamResult(x));
                     bytes = x.toByteArray();

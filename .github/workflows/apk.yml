@@ -25,4 +25,4 @@ jobs:
           gh release view "$v" >/dev/null 2>&1 && exit 0
           cp app/build/outputs/apk/debug/app-debug.apk "VisualizadorDocs-$v.apk"
           gh release create "$v" "VisualizadorDocs-$v.apk" --target "$GITHUB_SHA" --title "Versão ${v#v}" \
-            --notes "Novidade: zoom em PDF. Versão de teste: desinstale a anterior antes de instalar."
+            --notes "Novidade: edição de mais formatos (EPUB, RTF, modelos e qualquer arquivo de texto). Versão de teste: desinstale a anterior antes de instalar."

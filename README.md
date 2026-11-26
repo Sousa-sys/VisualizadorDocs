@@ -27,7 +27,10 @@ Toque em **Editar** e depois em **Salvar como**. O original não é alterado.
 | XLSX | células já preenchidas | não cria células nem edita fórmulas |
 | ODT, ODS, ODP | trechos de texto existentes | não cria conteúdo; não edita fórmulas |
 
-Somente leitura: PDF, EPUB, RTF, imagens e ZIP.
+Também editáveis: modelos e variantes do Office e OpenDocument, EPUB (trechos de texto), RTF (código-fonte)
+e outros arquivos de texto.
+
+Somente leitura: PDF, imagens, ZIP e DOC/XLS/PPT antigos (estes nem abrem).
 
 ## Estado dos testes
 Conversão e edição foram testadas em computador (Java 21) com arquivos de exemplo e entradas corrompidas.
